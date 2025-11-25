@@ -4,8 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-
-	// "fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -32,8 +31,32 @@ type PostOrderResponse struct {
 	Products []Product   `json:"products"`
 }
 
-// readFileProducer reads the file line by line and sends each line to channgel
-func readFileProducer(ctx context.Context, filePath string, jobs chan<- string, wg *sync.WaitGroup) {
+// getFilePaths gets all file paths in the specified directory
+func getFilePaths(rootDir string) ([]string, error) {
+	var paths []string
+
+	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				return err
+			}
+			paths = append(paths, absPath)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
+// readFileProducer reads the file line by line and sends each line to channel
+func readFileProducer(i int, ctx context.Context, filePath string, jobs chan<- string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	// open file
@@ -62,18 +85,17 @@ OuterLoop:
 		}
 	}
 
+	fmt.Printf("producer %d done reading\n", i)
+
 	// error on scan failure
 	if err := scanner.Err(); err != nil {
 		log.Fatalf("failed to scan file: %v", err)
 	}
 
-	// close channel when done reading
-	close(jobs)
-	fmt.Println("done reading")
 }
 
 // processDataConsumer processes data sent from producer
-func processDataConsumer(ctx context.Context, jobs <-chan string, result chan bool, couponCode string, wg *sync.WaitGroup) {
+func processDataConsumer(i int, ctx context.Context, jobs <-chan string, result chan string, couponCode string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for {
@@ -86,13 +108,14 @@ func processDataConsumer(ctx context.Context, jobs <-chan string, result chan bo
 
 			// stop processing if no more jobs
 			if !ok {
+				fmt.Printf("no more to process, consumer %d exiting\n", i)
 				return
 			}
 
 			// send to result if match found
 			if code == couponCode {
-				fmt.Printf("match found %v\n", code)
-				result <- true
+				fmt.Printf("worker %d -> match found %v\n", i, code)
+				result <- code
 				return
 			}
 		}
@@ -100,19 +123,35 @@ func processDataConsumer(ctx context.Context, jobs <-chan string, result chan bo
 }
 
 func validateCouponCode(couponCode string) bool {
-	relativePath := "data/couponbase1"
+
+	if len(couponCode) < 8 || len(couponCode) > 10 {
+		return false
+	}
+
 	pwd, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("error getting current working directory: %v", err)
 	}
-	filePath := filepath.Join(pwd, relativePath)
+
+	root := filepath.Join(pwd, "data")
+	filePaths, err := getFilePaths(root)
+	if err != nil {
+		log.Fatalf("error getting data file paths: %v", err)
+	}
+	for _, f := range filePaths {
+		fmt.Println(f)
+	}
+
+	// relativePath := "data/couponbase1"
+
+	// file := filepath.Join(pwd, relativePath)
 
 	const bufferSize = 1000
 	const numWorker = 5
 
 	// channel to store valid coupon code, note size is 1 imples is a buffered channel
 	// this will allow consumer to send result without blocking
-	resultCh := make(chan bool, 1)
+	resultCh := make(chan string, 2)
 
 	// channel to send from producer when reading file. Consumer will read from this channel and process.
 	dataCh := make(chan string, bufferSize)
@@ -124,38 +163,57 @@ func validateCouponCode(couponCode string) bool {
 	defer cancel()
 
 	// track go routines
-	var wg sync.WaitGroup
+	var wgConsumer sync.WaitGroup
+	var wgProducer sync.WaitGroup
 
 	// process data with multiple consumers
 	for w := 1; w <= numWorker; w++ {
-		wg.Add(1)
-		go processDataConsumer(ctx, dataCh, resultCh, couponCode, &wg)
+		wgConsumer.Add(1)
+		go processDataConsumer(w, ctx, dataCh, resultCh, couponCode, &wgConsumer)
 	}
 
-	// producer reading line by line and sending coupon code to channel for consumer to process
-	wg.Add(1)
-	go readFileProducer(ctx, filePath, dataCh, &wg)
+	// 1 producer per file to read line by line and send coupon code to channel for consumer to process
+	for i, file := range filePaths {
+		wgProducer.Add(1)
+		go readFileProducer(i, ctx, file, dataCh, &wgProducer)
+	}
 
 	// waiter goroutine: waits for all consumers and producers to finish, then close result
 	go func() {
-		wg.Wait()
+		wgConsumer.Wait()
 
 		// close results channel once finished
 		close(resultCh)
+		fmt.Println("done validating")
+
+		// cancel
+		// cancel()
+		// fmt.Println("finished!")
+	}()
+
+	go func() {
+		wgProducer.Wait()
+
+		// close channel when done reading
+		close(dataCh)
+		fmt.Println("done reading")
 	}()
 
 	// wait for match in result channel, finish if no match
-	found := false
-	result, ok := <-resultCh
-	if ok {
-		found = result
-	} else {
-		// closed channel implies no match was found
-		fmt.Println("no match found")
+	found := make(map[string]int)
+	for result := range resultCh {
+		found[result] += 1
+		if found[result] == 2 {
+			fmt.Printf("valid %v\n", result)
+			cancel()
+			return true
+		}
 	}
 
+	fmt.Println("no match")
+
 	// return the matching coupon code
-	return found
+	return false
 }
 
 // PostOrderHandler to add a new
