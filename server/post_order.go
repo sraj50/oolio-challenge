@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"oolio/backend-challenge/process_data"
 
@@ -35,11 +36,12 @@ func PostOrderHandler(c *gin.Context) {
 	}
 
 	// validate the coupon code
-	isValidCouponCode := processdata.ValidateCouponCode(body.CouponCode)
+	validationError := processdata.ValidateCouponCode(body.CouponCode)
+	var verr *processdata.ValidateCouponCodeError
 
 	// return error for invalid coupon code
-	if !isValidCouponCode {
-		c.IndentedJSON(http.StatusUnprocessableEntity, gin.H{"message": "invalid coupon code"})
+	if errors.As(validationError, &verr) {
+		c.IndentedJSON(verr.Code, gin.H{"message": verr.Message})
 		return
 	}
 

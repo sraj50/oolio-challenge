@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -36,13 +36,15 @@ func getFilePaths(rootDir string) ([]string, error) {
 }
 
 // readFileProducer reads the file line by line and sends each line to the jobs channel for proessing by consumers
-func readFileProducer(i int, ctx context.Context, filePath string, jobs chan<- []byte, wg *sync.WaitGroup) {
+func readFileProducer(i int, ctx context.Context, filePath string, jobs chan<- []byte, errorCh chan *ValidateCouponCodeError, wg *sync.WaitGroup) {
 	defer wg.Done()
+
+	fmt.Printf("producer %d start reading\n", i)
 
 	// open file
 	file, err := os.Open(filePath)
 	if err != nil {
-		log.Fatalf("failed to open file: %v", err)
+		errorCh <- &ValidateCouponCodeError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("failed to open file: %v", err)}
 	}
 	// close file when done
 	defer file.Close()
@@ -72,14 +74,22 @@ OuterLoop:
 
 	// error on scan failure
 	if err := scanner.Err(); err != nil {
-		log.Fatalf("failed to scan file: %v", err)
+		errorCh <- &ValidateCouponCodeError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("failed to scan file: %v", err)}
 	}
 
 }
 
 // processDataConsumer processes data sent from the producer. Consumer sends matching codes to results channel
-func processDataConsumer(i int, ctx context.Context, jobs <-chan []byte, result chan []byte, couponCode string, wg *sync.WaitGroup) {
+func processDataConsumer(
+	i int, ctx context.Context,
+	jobs <-chan []byte,
+	result chan []byte,
+	couponCode string,
+	wg *sync.WaitGroup,
+) {
 	defer wg.Done()
+
+	fmt.Printf("consumer %d start processing\n", i)
 
 	for {
 		select {
@@ -105,34 +115,59 @@ func processDataConsumer(i int, ctx context.Context, jobs <-chan []byte, result 
 	}
 }
 
+type ValidateCouponCodeError struct {
+	Code    int
+	Message string
+}
+
+func (e *ValidateCouponCodeError) Error() string {
+	return fmt.Sprintf("%d - %s", e.Code, e.Message)
+}
+
+// bufferSize for jobs channel
+const bufferSize = 1000
+
+// numWorker is number of consumers
+const numWorker = 5
+
+// threshold is the minumum number of valid codes found in files to be accepted as a valid coupon code
+const threshold = 2
+
 // ValidateCouponCode the main goroutine that validates the coupon code
-func ValidateCouponCode(couponCode string) bool {
+func ValidateCouponCode(couponCode string) error {
 
 	// return immediately for invalid coupon codes
 	if len(couponCode) < 8 || len(couponCode) > 10 {
-		return false
+		return &ValidateCouponCodeError{
+			Code:    http.StatusUnprocessableEntity,
+			Message: "invalid coupon code, must be between 8 and 10 characters long",
+		}
 	}
 
 	pwd, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("error getting current working directory: %v", err)
+		return &ValidateCouponCodeError{
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("error getting current working directory: %v", err),
+		}
 	}
 
 	root := filepath.Join(pwd, "data")
 	filePaths, err := getFilePaths(root)
 	if err != nil {
-		log.Fatalf("error getting data file paths: %v", err)
+		return &ValidateCouponCodeError{
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("error getting data file paths: %v", err),
+		}
 	}
-
-	// bufferSize for jobs channel
-	const bufferSize = 1000
-
-	// numWorker is number of consumers
-	const numWorker = 5
 
 	// resultCh is a channel to send valid coupon codes, note size is 2 that expects at least 2 valid codes
 	// a buffered channel will allow consumer to send result without blocking
-	resultCh := make(chan []byte, 2)
+	resultCh := make(chan []byte, threshold)
+
+	// errorCh is a chanel to send any errors encountered in producer/consumer
+	// is a buffered channel to be non-blocking
+	errorCh := make(chan *ValidateCouponCodeError, 1)
 
 	// jobsCh is a channel to send from the producer when reading the file. The consumer will receive from this channel and process.
 	jobsCh := make(chan []byte, bufferSize)
@@ -158,7 +193,7 @@ func ValidateCouponCode(couponCode string) bool {
 	// 1 producer per file to read line by line and send coupon code to jobs channel for consumer to process
 	for i, file := range filePaths {
 		wgProducer.Add(1)
-		go readFileProducer(i, ctx, file, jobsCh, &wgProducer)
+		go readFileProducer(i, ctx, file, jobsCh, errorCh, &wgProducer)
 	}
 
 	// waiter goroutine: waits for all consumers to finish and close the results channel
@@ -170,33 +205,49 @@ func ValidateCouponCode(couponCode string) bool {
 		fmt.Println("done validating")
 	}()
 
-	// waiter goroutine: wait for all producers to finish reading files and closes the jobs channel
-	// This will hande the case where no match is found and produces stop and close the jobs channel
+	// waiter goroutine: wait for all producers to finish reading files and closes the jobs and error channel
+	// This will hande the case where no match is found and produces stop
 	go func() {
 		wgProducer.Wait()
 
 		// close channel when done reading
 		close(jobsCh)
 		fmt.Println("done reading")
+
+		// close error channel
+		close(errorCh)
 	}()
 
 	// wait for match in result channel, finish if no match
 	found := make(map[string]int)
-	for resultBytes := range resultCh {
-		result := string(resultBytes)
-		found[result] += 1
+	for range threshold {
+		select {
+		case resultBytes, ok := <-resultCh:
+			if ok {
+				result := string(resultBytes)
+				found[result] += 1
 
-		// if at least 2 matches are found, cancel the context immediately. This will signal produces and consumers to stop.
-		if found[result] == 2 {
-			fmt.Printf("valid %v\n", result)
-			cancel()
+				// if at least 2 matches are found, cancel the context immediately. This will signal produces and consumers to stop.
+				if found[result] == 2 {
+					fmt.Printf("valid %v\n", result)
+					cancel()
 
-			// return true for a valid coupon code
-			return true
+					// return true for a valid coupon code
+					return nil
+				}
+			}
+		case err := <-errorCh:
+			if err != nil {
+				cancel()
+				return err
+			}
 		}
 	}
 
 	// return false for no matching coupon code
 	fmt.Println("no match")
-	return false
+	return &ValidateCouponCodeError{
+		Code:    http.StatusUnprocessableEntity,
+		Message: "invalid coupon code, not found",
+	}
 }
