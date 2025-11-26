@@ -115,11 +115,13 @@ func processDataConsumer(
 	}
 }
 
+// ValidateCouponCodeError custom error used to send in the response
 type ValidateCouponCodeError struct {
 	Code    int
 	Message string
 }
 
+// Error implements the custom error
 func (e *ValidateCouponCodeError) Error() string {
 	return fmt.Sprintf("%d - %s", e.Code, e.Message)
 }
