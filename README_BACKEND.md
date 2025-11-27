@@ -28,7 +28,7 @@ Multiple consumer goroutines read the jobs channel:
 
 A WaitGroup is maintained to track all producer and consumer goroutines.
 
-The main goroutine listens to the results channel and tracks matches in a map[string]int. The map counts how many times (or in how many files) the code has been found.
+The main goroutine listens to the results channel and tracks matches in a  `map[string]int`. The map counts how many times (or in how many files) the code has been found.
 
 When the count for a code reaches 2 (i.e. the coupon appears in at least two files), we immediately stop all ongoing work:
 
