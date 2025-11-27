@@ -13,48 +13,54 @@ import (
 )
 
 func TestGetProduct(t *testing.T) {
-	router := gin.Default()
-	router.GET("/product", server.GetProductHandler)
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/product", nil)
-	router.ServeHTTP(w, req)
+	t.Run("GetProduct", func(t *testing.T) {
+		router := gin.Default()
+		router.GET("/product", server.GetProductHandler)
 
-	want := server.Products
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/product", nil)
+		router.ServeHTTP(w, req)
 
-	var got []server.Product
-	err := json.NewDecoder(w.Body).Decode(&got)
-	if err != nil {
-		t.Fatalf("could not unmarshal response: %v", err)
-	}
+		want := server.Products
 
-	assert.Equal(t, 200, w.Code)
-	assert.Equal(t, want, got)
+		var got []server.Product
+		err := json.NewDecoder(w.Body).Decode(&got)
+		if err != nil {
+			t.Fatalf("could not unmarshal response: %v", err)
+		}
+
+		assert.Equal(t, 200, w.Code)
+		assert.Equal(t, want, got)
+	})
 }
 
 func TestGetProductId(t *testing.T) {
-	router := gin.Default()
-	router.GET("/product/:id", server.GetProductIdHandler)
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/product/1", nil)
-	router.ServeHTTP(w, req)
+	t.Run("GetProductId", func(t *testing.T) {
+		router := gin.Default()
+		router.GET("/product/:id", server.GetProductIdHandler)
 
-	want := server.Product{
-		ID:       "1",
-		Name:     "Chicken Waffle",
-		Category: "Waffle",
-		Price:    6.5,
-	}
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/product/1", nil)
+		router.ServeHTTP(w, req)
 
-	var got server.Product
-	err := json.NewDecoder(w.Body).Decode(&got)
-	if err != nil {
-		t.Fatalf("could not unmarshal response: %v", err)
-	}
+		want := server.Product{
+			ID:       "1",
+			Name:     "Chicken Waffle",
+			Category: "Waffle",
+			Price:    6.5,
+		}
 
-	assert.Equal(t, 200, w.Code)
-	assert.Equal(t, want, got)
+		var got server.Product
+		err := json.NewDecoder(w.Body).Decode(&got)
+		if err != nil {
+			t.Fatalf("could not unmarshal response: %v", err)
+		}
+
+		assert.Equal(t, 200, w.Code)
+		assert.Equal(t, want, got)
+	})
 }
 
 func TestPostOrder(t *testing.T) {
@@ -73,21 +79,23 @@ func TestPostOrder(t *testing.T) {
 		{req: server.PostOrderRequest{Items: []server.OrderItem{{ProductId: "1", Quantity: 1}}, CouponCode: "FIFTYOFF"}, resCode: http.StatusOK},                  // coupon code, fails validation requirements, 200 ok
 	}
 
-	router := gin.Default()
-	router.POST("/order", server.PostOrderHandler)
+	t.Run("PostOrder", func(t *testing.T) {
+		router := gin.Default()
+		router.POST("/order", server.PostOrderHandler)
 
-	for _, tc := range testCases {
+		for _, tc := range testCases {
 
-		reqBodyJson, err := json.Marshal(tc.req)
-		if err != nil {
-			t.Fatalf("failed to marshal post request body: %v", err)
+			reqBodyJson, err := json.Marshal(tc.req)
+			if err != nil {
+				t.Fatalf("failed to marshal post request body: %v", err)
+			}
+
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("POST", "/order", strings.NewReader(string(reqBodyJson)))
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, tc.resCode, w.Code)
+
 		}
-
-		w := httptest.NewRecorder()
-		req, _ := http.NewRequest("POST", "/order", strings.NewReader(string(reqBodyJson)))
-		router.ServeHTTP(w, req)
-
-		assert.Equal(t, tc.resCode, w.Code)
-
-	}
+	})
 }

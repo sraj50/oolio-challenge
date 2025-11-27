@@ -4,116 +4,25 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"oolio/backend-challenge/utils"
 )
 
-// getFilePaths gets all file paths in the specified directory
-func getFilePaths(rootDir string) ([]string, error) {
-	var paths []string
+// bufferSize for jobs channel
+const bufferSize = 1000
 
-	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			absPath, err := filepath.Abs(path)
-			if err != nil {
-				return err
-			}
-			paths = append(paths, absPath)
-		}
-		return nil
-	})
+// numWorker is number of consumers
+const numWorker = 5
 
-	if err != nil {
-		return nil, err
-	}
-	return paths, nil
-}
+// threshold is the minumum number of valid codes found in files to be accepted as a valid coupon code
+const threshold = 2
 
-// readFileProducer reads the file line by line and sends each line to the jobs channel for proessing by consumers
-func readFileProducer(i int, ctx context.Context, filePath string, jobs chan<- []byte, errorCh chan *ValidateCouponCodeError, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	fmt.Printf("producer %d start reading\n", i)
-
-	// open file
-	file, err := os.Open(filePath)
-	if err != nil {
-		errorCh <- &ValidateCouponCodeError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("failed to open file: %v", err)}
-	}
-	// close file when done
-	defer file.Close()
-
-	// scane file line by line
-	scanner := bufio.NewScanner(file)
-
-OuterLoop:
-	for scanner.Scan() {
-
-		// read line as bytes
-		lineBytes := scanner.Bytes()
-		line := make([]byte, len(lineBytes))
-		copy(line, lineBytes)
-
-		select {
-		case <-ctx.Done():
-			// stop reading if context is done
-			break OuterLoop
-		default:
-			// send coupon code to jobs channel for processing
-			jobs <- line
-		}
-	}
-
-	fmt.Printf("producer %d done reading\n", i)
-
-	// error on scan failure
-	if err := scanner.Err(); err != nil {
-		errorCh <- &ValidateCouponCodeError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("failed to scan file: %v", err)}
-	}
-
-}
-
-// processDataConsumer processes data sent from the producer. Consumer sends matching codes to results channel
-func processDataConsumer(
-	i int, ctx context.Context,
-	jobs <-chan []byte,
-	result chan []byte,
-	couponCode string,
-	wg *sync.WaitGroup,
-) {
-	defer wg.Done()
-
-	fmt.Printf("consumer %d start processing\n", i)
-
-	for {
-		select {
-
-		// stop processing if context is finished
-		case <-ctx.Done():
-			return
-		case codeBytes, ok := <-jobs:
-
-			// stop processing if no more jobs i.e. channel is closed
-			if !ok {
-				fmt.Printf("no more to process, consumer %d exiting\n", i)
-				return
-			}
-
-			// send to result if match found
-			if string(codeBytes) == couponCode {
-				fmt.Printf("consumer %d -> match found %v\n", i, string(codeBytes))
-				result <- codeBytes
-				return
-			}
-		}
-	}
-}
+// name of the directory containing the file data
+const dataDirectory = "data"
 
 // ValidateCouponCodeError custom error used to send in the response
 type ValidateCouponCodeError struct {
@@ -125,15 +34,6 @@ type ValidateCouponCodeError struct {
 func (e *ValidateCouponCodeError) Error() string {
 	return fmt.Sprintf("%d - %s", e.Code, e.Message)
 }
-
-// bufferSize for jobs channel
-const bufferSize = 1000
-
-// numWorker is number of consumers
-const numWorker = 5
-
-// threshold is the minumum number of valid codes found in files to be accepted as a valid coupon code
-const threshold = 2
 
 // ValidateCouponCode the main goroutine that validates the coupon code
 func ValidateCouponCode(couponCode string) error {
@@ -154,8 +54,8 @@ func ValidateCouponCode(couponCode string) error {
 		}
 	}
 
-	root := filepath.Join(pwd, "data")
-	filePaths, err := getFilePaths(root)
+	root := filepath.Join(pwd, dataDirectory)
+	filePaths, err := utils.GetFilePaths(root)
 	if err != nil {
 		return &ValidateCouponCodeError{
 			Code:    http.StatusInternalServerError,
@@ -252,5 +152,85 @@ func ValidateCouponCode(couponCode string) error {
 	return &ValidateCouponCodeError{
 		Code:    http.StatusUnprocessableEntity,
 		Message: "invalid coupon code, not found",
+	}
+}
+
+// readFileProducer reads the file line by line and sends each line to the jobs channel for proessing by consumers
+func readFileProducer(i int, ctx context.Context, filePath string, jobs chan<- []byte, errorCh chan *ValidateCouponCodeError, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	fmt.Printf("producer %d start reading\n", i)
+
+	// open file
+	file, err := os.Open(filePath)
+	if err != nil {
+		errorCh <- &ValidateCouponCodeError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("failed to open file: %v", err)}
+	}
+	// close file when done
+	defer file.Close()
+
+	// scane file line by line
+	scanner := bufio.NewScanner(file)
+
+OuterLoop:
+	for scanner.Scan() {
+
+		// read line as bytes
+		lineBytes := scanner.Bytes()
+		line := make([]byte, len(lineBytes))
+		copy(line, lineBytes)
+
+		select {
+		case <-ctx.Done():
+			// stop reading if context is done
+			break OuterLoop
+		default:
+			// send coupon code to jobs channel for processing
+			jobs <- line
+		}
+	}
+
+	fmt.Printf("producer %d done reading\n", i)
+
+	// error on scan failure
+	if err := scanner.Err(); err != nil {
+		errorCh <- &ValidateCouponCodeError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("failed to scan file: %v", err)}
+	}
+
+}
+
+// processDataConsumer processes data sent from the producer. Consumer sends matching codes to results channel
+func processDataConsumer(
+	i int, ctx context.Context,
+	jobs <-chan []byte,
+	result chan []byte,
+	couponCode string,
+	wg *sync.WaitGroup,
+) {
+	defer wg.Done()
+
+	fmt.Printf("consumer %d start processing\n", i)
+
+	for {
+		select {
+
+		// stop processing if context is finished
+		case <-ctx.Done():
+			return
+		case codeBytes, ok := <-jobs:
+
+			// stop processing if no more jobs i.e. channel is closed
+			if !ok {
+				fmt.Printf("no more to process, consumer %d exiting\n", i)
+				return
+			}
+
+			// send to result if match found
+			if string(codeBytes) == couponCode {
+				fmt.Printf("consumer %d -> match found %v\n", i, string(codeBytes))
+				result <- codeBytes
+				return
+			}
+		}
 	}
 }
