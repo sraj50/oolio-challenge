@@ -9,3 +9,5 @@ Copy the following files:
 Run `go get .` to install project dependencies.
 
 Run `go run .` to run the server listening on `localhost:8080`
+
+Run `go test ./...` to run tests.

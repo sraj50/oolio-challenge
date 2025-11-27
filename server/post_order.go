@@ -35,14 +35,16 @@ func PostOrderHandler(c *gin.Context) {
 		return
 	}
 
-	// validate the coupon code
-	validationError := processdata.ValidateCouponCode(body.CouponCode)
-	var verr *processdata.ValidateCouponCodeError
+	if body.CouponCode != "" {
+		// validate the coupon code
+		validationError := processdata.ValidateCouponCode(body.CouponCode)
+		var verr *processdata.ValidateCouponCodeError
 
-	// return error for invalid coupon code
-	if errors.As(validationError, &verr) {
-		c.IndentedJSON(verr.Code, gin.H{"message": verr.Message})
-		return
+		// return error for invalid coupon code
+		if errors.As(validationError, &verr) {
+			c.IndentedJSON(verr.Code, gin.H{"message": verr.Message})
+			return
+		}
 	}
 
 	productsToOrder := []Product{}
