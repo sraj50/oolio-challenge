@@ -46,6 +46,7 @@ func ValidateCouponCode(couponCode string) error {
 		}
 	}
 
+	// get the current working directory, to be used to for getting the data file paths
 	pwd, err := os.Getwd()
 	if err != nil {
 		return &ValidateCouponCodeError{
@@ -54,6 +55,7 @@ func ValidateCouponCode(couponCode string) error {
 		}
 	}
 
+	// get the data files paths
 	root := filepath.Join(pwd, dataDirectory)
 	filePaths, err := utils.GetFilePaths(root)
 	if err != nil {
