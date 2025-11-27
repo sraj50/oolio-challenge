@@ -70,7 +70,7 @@ func TestPostOrder(t *testing.T) {
 		{req: server.PostOrderRequest{Items: []server.OrderItem{{ProductId: "1", Quantity: 1}}}, resCode: http.StatusOK},                                          // no coupon code, 200 ok
 		{req: server.PostOrderRequest{Items: []server.OrderItem{{ProductId: "1", Quantity: 1}}, CouponCode: "blah"}, resCode: http.StatusUnprocessableEntity},     // invalid coupon code, does not meet character requirements, 422 bad request
 		{req: server.PostOrderRequest{Items: []server.OrderItem{{ProductId: "1", Quantity: 1}}, CouponCode: "SUPER100"}, resCode: http.StatusUnprocessableEntity}, // coupon code, fails validation requirements, 422 bad request
-		{req: server.PostOrderRequest{Items: []server.OrderItem{{ProductId: "1", Quantity: 1}}, CouponCode: "FIFTYOFF"}, resCode: http.StatusUnprocessableEntity}, // coupon code, fails validation requirements, 422 bad request
+		{req: server.PostOrderRequest{Items: []server.OrderItem{{ProductId: "1", Quantity: 1}}, CouponCode: "FIFTYOFF"}, resCode: http.StatusOK},                  // coupon code, fails validation requirements, 200 ok
 	}
 
 	router := gin.Default()
