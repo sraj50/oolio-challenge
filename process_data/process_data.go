@@ -238,6 +238,7 @@ func ValidateCouponCode(couponCode string) error {
 					return nil
 				}
 			}
+		// if error is encountered, cancel the context which stops all producer/consumer
 		case err := <-errorCh:
 			if err != nil {
 				cancel()
